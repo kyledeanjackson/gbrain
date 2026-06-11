@@ -16,7 +16,7 @@ import { expandQuery } from './search/expansion.ts';
 import { dedupResults } from './search/dedup.ts';
 import { captureEvalCandidate, isEvalCaptureEnabled, isEvalScrubEnabled } from './eval-capture.ts';
 import type { HybridSearchMeta } from './types.ts';
-import { extractPageLinks, isAutoLinkEnabled, isAutoTimelineEnabled, isGlobalBasenameEnabled, parseTimelineEntries, makeResolver, type UnresolvedFrontmatterRef } from './link-extraction.ts';
+import { extractPageLinks, getAutoLinkExtraDirs, isAutoLinkEnabled, isAutoTimelineEnabled, isGlobalBasenameEnabled, parseTimelineEntries, makeResolver, type UnresolvedFrontmatterRef } from './link-extraction.ts';
 import { isFactsBackstopEligible } from './facts/eligibility.ts';
 import { stripTakesFence } from './takes-fence.ts';
 import { stripFactsFence } from './facts-fence.ts';
@@ -1082,9 +1082,12 @@ async function runAutoLink(
   const resolver = makeResolver(engine, { mode: 'live', sourceId: opts?.sourceId });
   // Issue #972: opt-in bare-wikilink basename resolution. Off by default.
   const globalBasename = await isGlobalBasenameEnabled(engine);
+  // v0.33.3 BH-carry: extend dir whitelist with site-specific prefixes from
+  // auto_link.extra_dirs config (numbered dirs, shorthand aliases).
+  const extraDirs = await getAutoLinkExtraDirs(engine);
   const { candidates, unresolved } = await extractPageLinks(
     slug, fullContent, parsed.frontmatter, parsed.type, resolver,
-    { globalBasename },
+    { globalBasename, extraDirs },
   );
 
   // Resolve which targets exist (skip refs to non-existent pages to avoid FK

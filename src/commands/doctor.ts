@@ -33,6 +33,7 @@ import { fileURLToPath } from 'url';
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import {
   extractEntityRefs,
+  getAutoLinkExtraDirs,
   isGlobalBasenameEnabled,
   buildBasenameIndex,
   queryBasenameIndex,
@@ -1071,12 +1072,16 @@ export async function checkLinkResolutionOpportunity(
       ? ` (scanned the ${SAMPLE_LIMIT} most-recent of ${totalPages} pages)`
       : '';
     const deadline = Date.now() + 60_000;
+    // v0.33.3 BH-carry: honor auto_link.extra_dirs here too, so site-specific
+    // dirs ("03-ventures/…") aren't miscounted as bare wikilinks and don't
+    // inflate the global_basename recommendation.
+    const extraDirs = await getAutoLinkExtraDirs(engine);
     const hb = progress ? startHeartbeat(progress, `scanning ${sampled.length} pages for bare wikilinks…`) : null;
     try {
       for (const row of sampled) {
         if (Date.now() > deadline) break; // backstop; in-memory scan rarely hits it
         const content = (row.compiled_truth ?? '') + '\n' + (row.timeline ?? '');
-        for (const e of extractEntityRefs(content)) {
+        for (const e of extractEntityRefs(content, extraDirs)) {
           if (!e.needsResolution) continue;
           bareCount++;
           // Issue #972 (codex): match on the wikilink TARGET (e.slug), not

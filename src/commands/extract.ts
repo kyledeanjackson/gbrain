@@ -38,6 +38,7 @@ import {
   extractFrontmatterLinks, isGlobalBasenameEnabled, LINK_EXTRACTOR_VERSION_TS,
   WIKILINK_BASENAME_LINK_TYPE,
   buildBasenameIndex, queryBasenameIndex, stripCodeBlocks,
+  getAutoLinkExtraDirs,
   type UnresolvedFrontmatterRef, type LinkCandidate,
 } from '../core/link-extraction.ts';
 import { createProgress } from '../core/progress.ts';
@@ -1285,6 +1286,12 @@ async function extractLinksFromDB(
   // `gbrain extract links --source db`). Only stamp when the caller ran BOTH
   // (subcommand 'all'). Caller passes stampWatermark accordingly.
   const stampWatermark = opts?.stampWatermark ?? false;
+  // v0.33.3 BH-carry: pull site-specific extra dir prefixes from config
+  // (auto_link.extra_dirs). Sites with numbered dirs ("03-ventures") or
+  // shorthand wikilink aliases ("venture/", "person/") set this so the
+  // extractor recognizes their links. Default behavior unchanged when
+  // unset. See src/core/link-extraction.ts buildEntityRegexes.
+  const extraDirs = await getAutoLinkExtraDirs(engine);
   // Batch resolver: pg_trgm + exact only, NO search fallback. Dodges the
   // N-thousand API call trap on 46K-page brains. Resolver has a per-run
   // cache so duplicate names (same person appearing on many pages) resolve
@@ -1381,7 +1388,7 @@ async function extractLinksFromDB(
     // basename lookup; off by default for back-compat.
     const extracted = await extractPageLinks(
       slug, fullContent, page.frontmatter, page.type, resolver,
-      { skipFrontmatter: !includeFrontmatter, globalBasename },
+      { skipFrontmatter: !includeFrontmatter, globalBasename, extraDirs },
     );
     unresolved.push(...extracted.unresolved);
 
@@ -1607,6 +1614,10 @@ async function extractStaleFromDB(
   const resolver = makeResolver(engine, { mode: 'batch' });
   const nullResolver = { resolve: async () => null as string | null };
   const activeResolver = includeFrontmatter ? resolver : nullResolver;
+  // v0.33.3 BH-carry: same auto_link.extra_dirs whitelist as extractLinksFromDB,
+  // so the --stale path recognizes site-specific dirs (numbered "03-ventures",
+  // shorthand "venture/") too. Default behavior unchanged when unset.
+  const extraDirs = await getAutoLinkExtraDirs(engine);
   const allRefs = await engine.listAllPageRefs();
   const allSlugs = new Set<string>();
   const slugToSources = new Map<string, string[]>();
@@ -1639,6 +1650,7 @@ async function extractStaleFromDB(
       const fullContent = page.compiled_truth + '\n' + page.timeline;
       const extracted = await extractPageLinks(
         page.slug, fullContent, page.frontmatter, page.type, activeResolver,
+        { extraDirs },
       );
       for (const c of extracted.candidates) {
         const r = resolveCandidateSources(c, page.slug, page.source_id, allSlugs, slugToSources);
