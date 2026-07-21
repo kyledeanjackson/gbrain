@@ -124,4 +124,24 @@ describe('serve stdio round-trip E2E (local PGLite → real MCP tool calls)', ()
     // The result payload (slug / title / snippet) must mention the marker.
     expect(text).toContain(MARKER);
   }, 30_000);
+
+  test('tools/call whoami succeeds over real stdio transport (regression: was unknown_transport)', async () => {
+    // Every Claude Code / Claude Desktop session talks to gbrain over this
+    // exact transport (`gbrain serve` via stdio). Before the src/mcp/server.ts
+    // fix, CallToolRequestSchema's handler passed `remote: true` with no
+    // `auth`, so whoami's fail-closed check (core/operations.ts ~3445)
+    // threw `unknown_transport` on every single call — not an edge case,
+    // the default case for the most common calling pattern in the whole
+    // system. This asserts the real subprocess (not a synthesized
+    // OperationContext — see test/whoami.test.ts for that unit coverage)
+    // now answers instead of erroring, and that the answer reflects the
+    // actual restricted stdio scope rather than fabricating a broader one.
+    expect(connected).toBe(true);
+    const res = await client!.callTool({ name: 'whoami', arguments: {} });
+    expect((res as { isError?: boolean }).isError).toBeFalsy();
+    const text = textOf(res);
+    const who = JSON.parse(text) as { transport: string; scopes: string[]; token_name?: string };
+    expect(who.transport).toBe('legacy');
+    expect(who.scopes).toEqual(['world']);
+  }, 30_000);
 });

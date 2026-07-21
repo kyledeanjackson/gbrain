@@ -2,7 +2,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { BrainEngine } from '../core/engine.ts';
-import { operations } from '../core/operations.ts';
+import { operations, type AuthInfo } from '../core/operations.ts';
 import { VERSION } from '../version.ts';
 import { buildToolDefs } from './tool-defs.ts';
 import { dispatchToolCall, validateParams, buildOperationContext } from './dispatch.ts';
@@ -28,6 +28,32 @@ export async function startMcpServer(engine: BrainEngine) {
     tools: buildToolDefs(operations),
   }));
 
+  // v0.42.41: synthetic AuthInfo for the stdio transport. stdio MCP callers
+  // (every Claude Code / Claude Desktop session) have no per-token bearer
+  // auth — there's no HTTP request to pull a client_id/scopes off of — but
+  // `remote: true` below is still correct and intentional (see comment on
+  // dispatchToolCall): it's what keeps `takesHoldersAllowList: ['world']`
+  // enforced so an agent can't see Kyle's private takes/hunches just by
+  // being a local process. The gap this was leaving: `whoami`'s fail-closed
+  // check (`ctx.remote === true && !ctx.auth` -> throw unknown_transport,
+  // core/operations.ts ~3445) had no way to distinguish "stdio MCP, a real
+  // and identifiable transport with known restricted scope" from "some
+  // future remote caller that genuinely forgot to thread auth" — so it
+  // threw for every single stdio call, which is the common case, not the
+  // exceptional one. Populating a clientId that does NOT match the
+  // `gbrain_cl_` OAuth prefix routes whoami into its existing 'legacy'
+  // response branch (transport-accurate: this is not OAuth), reporting the
+  // same ['world'] scope already enforced on takes_list/takes_search/query
+  // above, so whoami's answer matches what this transport can actually do.
+  // Does NOT change `remote`, does NOT widen `takesHoldersAllowList`, and
+  // does NOT touch the HTTP/OAuth transport (serve-http.ts) at all.
+  const stdioAuth: AuthInfo = {
+    token: '',
+    clientId: 'gbrain_stdio_local',
+    clientName: 'stdio (local MCP pipe)',
+    scopes: ['world'],
+  };
+
   // Dispatch tool calls via shared dispatch.ts (parity with HTTP transport).
   // MCP stdio callers are remote/untrusted; dispatch defaults remote=true.
   // The MCP SDK's response type widened in 1.29 to allow a managed-task wrapper;
@@ -42,6 +68,7 @@ export async function startMcpServer(engine: BrainEngine) {
     // `gbrain call <op>` (sets remote=false in src/cli.ts).
     return dispatchToolCall(engine, name, params, {
       remote: true,
+      auth: stdioAuth,
       takesHoldersAllowList: ['world'],
       // v0.31: source defaults to 'default' for stdio (no per-token scope).
       // Operators who want a different source on stdio MCP should set
