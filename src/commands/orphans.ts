@@ -15,6 +15,7 @@
 import type { BrainEngine } from '../core/engine.ts';
 import { createProgress, startHeartbeat } from '../core/progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
+import { getConfigStringList } from '../core/link-extraction.ts';
 
 // --- Types ---
 
@@ -60,8 +61,15 @@ const FIRST_SEGMENT_EXCLUSIONS = new Set(['scratch', 'thoughts', 'catalog', 'ent
 /**
  * Returns true if a slug should be excluded from orphan reporting by default.
  * These are pages where having no inbound links is expected / not a content problem.
+ *
+ * BH carry (connectivity-fix): `extraDenyPrefixes` extends the hardcoded
+ * upstream DENY_PREFIXES with site-specific junk domains read from config
+ * (`orphans.extra_deny_prefixes`) — e.g. `_archive/`, `_templates/`,
+ * `finance-os/triage/`, buyer-enrichment/duplicate-import prefixes — so they
+ * leave the orphan set (and the total_linkable denominator) without a fork of
+ * the constant. Default `[]` preserves the original single-arg behavior.
  */
-export function shouldExclude(slug: string): boolean {
+export function shouldExclude(slug: string, extraDenyPrefixes: readonly string[] = []): boolean {
   // Pseudo-pages (exact match)
   if (PSEUDO_SLUGS.has(slug)) return true;
 
@@ -73,9 +81,12 @@ export function shouldExclude(slug: string): boolean {
   // Raw source slugs
   if (slug.includes(RAW_SEGMENT)) return true;
 
-  // Deny-prefix slugs
+  // Deny-prefix slugs (hardcoded upstream + config-driven BH extras).
   for (const prefix of DENY_PREFIXES) {
     if (slug.startsWith(prefix)) return true;
+  }
+  for (const prefix of extraDenyPrefixes) {
+    if (prefix && slug.startsWith(prefix)) return true;
   }
 
   // First-segment exclusions
@@ -142,6 +153,13 @@ export async function findOrphans(
   // pagination was considered and rejected: without an index on
   // links.to_page_id it does no useful work. Adding that index is a
   // follow-up (v0.14.3 schema migration).
+  // BH carry (connectivity-fix): site-specific deny prefixes from config
+  // (`orphans.extra_deny_prefixes`). Read once and threaded into BOTH the
+  // orphan filter and the total_linkable denominator loop so they stay
+  // consistent (an excluded page must leave both the numerator and the
+  // denominator). Malformed config degrades to [] via getConfigStringList.
+  const extraDenyPrefixes = await getConfigStringList(engine, 'orphans.extra_deny_prefixes');
+
   const progress = createProgress(cliOptsToProgressOptions(getCliOptions()));
   progress.start('orphans.scan');
   const stopHb = startHeartbeat(progress, 'scanning pages for missing inbound links…');
@@ -176,7 +194,7 @@ export async function findOrphans(
     total = liveRows.length;
     excludedAll = includePseudo
       ? 0
-      : liveRows.reduce((n, r) => n + (shouldExclude(r.slug) ? 1 : 0), 0);
+      : liveRows.reduce((n, r) => n + (shouldExclude(r.slug, extraDenyPrefixes) ? 1 : 0), 0);
   } finally {
     stopHb();
     progress.finish();
@@ -184,7 +202,7 @@ export async function findOrphans(
 
   const filtered = includePseudo
     ? allOrphans
-    : allOrphans.filter(row => !shouldExclude(row.slug));
+    : allOrphans.filter(row => !shouldExclude(row.slug, extraDenyPrefixes));
 
   const orphans: OrphanPage[] = filtered.map(row => ({
     slug: row.slug,

@@ -144,20 +144,25 @@ const DIR_PATTERN = buildDirPattern();
 const { entityRefRe: ENTITY_REF_RE, wikilinkRe: WIKILINK_RE, qualifiedWikilinkRe: QUALIFIED_WIKILINK_RE } = buildEntityRegexes();
 
 /**
- * Read the `auto_link.extra_dirs` config from the engine. Supports either a
- * JSON array string (`["03-ventures","venture"]`) or comma-separated
- * (`03-ventures,venture`). Returns `[]` on any read or parse error so the
- * default whitelist still applies.
+ * Read a config key that holds a list of strings. Supports either a JSON
+ * array string (`["a","b"]`) or comma-separated (`a,b`). Non-string / empty
+ * array elements are dropped (they'd otherwise escape the try/catch and throw
+ * downstream in string ops). Returns `[]` on any read or parse error so
+ * callers can treat "unset", "malformed", and "empty" identically.
+ *
+ * BH carry (connectivity-fix): extracted from getAutoLinkExtraDirs so the
+ * orphans deny-prefix list (`orphans.extra_deny_prefixes`) reuses the exact
+ * same parse + resilience contract.
  */
-export async function getAutoLinkExtraDirs(engine: BrainEngine): Promise<readonly string[]> {
+export async function getConfigStringList(engine: BrainEngine, key: string): Promise<readonly string[]> {
   try {
-    const raw = await engine.getConfig('auto_link.extra_dirs');
+    const raw = await engine.getConfig(key);
     if (!raw) return [];
     const trimmed = raw.trim();
     if (trimmed.startsWith('[')) {
       const parsed = JSON.parse(trimmed);
-      // Non-string elements would escape this try/catch and throw later inside
-      // escapeDirForRegex (d.replace is not a function), crashing extraction.
+      // Non-string elements would escape this try/catch and throw later in the
+      // consumer (e.g. escapeDirForRegex's d.replace / String.startsWith).
       if (!Array.isArray(parsed)) return [];
       return parsed.filter((d): d is string => typeof d === 'string' && d.length > 0);
     }
@@ -165,6 +170,16 @@ export async function getAutoLinkExtraDirs(engine: BrainEngine): Promise<readonl
   } catch {
     return [];
   }
+}
+
+/**
+ * Read the `auto_link.extra_dirs` config from the engine. Supports either a
+ * JSON array string (`["03-ventures","venture"]`) or comma-separated
+ * (`03-ventures,venture`). Returns `[]` on any read or parse error so the
+ * default whitelist still applies.
+ */
+export async function getAutoLinkExtraDirs(engine: BrainEngine): Promise<readonly string[]> {
+  return getConfigStringList(engine, 'auto_link.extra_dirs');
 }
 
 /**
