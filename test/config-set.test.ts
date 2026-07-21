@@ -29,6 +29,13 @@ describe('KNOWN_CONFIG_KEYS', () => {
     expect(KNOWN_CONFIG_KEYS).toContain('models.tier.subagent');
   });
 
+  test('contains the BH connectivity-fix keys (carry: link-extraction + orphans)', () => {
+    // Registered so `gbrain config set` accepts them without --force.
+    expect(KNOWN_CONFIG_KEYS).toContain('auto_link.extra_dirs');
+    expect(KNOWN_CONFIG_KEYS).toContain('auto_link.relative_markdown');
+    expect(KNOWN_CONFIG_KEYS).toContain('orphans.extra_deny_prefixes');
+  });
+
   test('no duplicate entries', () => {
     const set = new Set(KNOWN_CONFIG_KEYS);
     expect(set.size).toBe(KNOWN_CONFIG_KEYS.length);

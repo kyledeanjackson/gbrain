@@ -802,6 +802,13 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   // Link resolution (issue #972)
   'link_resolution',
   'link_resolution.global_basename',
+  // BH carry (connectivity-fix): link-extraction + orphan tunables. Registered
+  // so `gbrain config set` accepts them without --force. auto_link.extra_dirs
+  // dates to b3754047 (read path added, key never registered — this closes
+  // that gap); the other two ship with the connectivity carries.
+  'auto_link.extra_dirs',           // extra entity-dir prefixes for link extraction
+  'auto_link.relative_markdown',    // enable repo-relative markdown link resolution
+  'orphans.extra_deny_prefixes',    // extra slug prefixes excluded from orphan reporting
 ];
 
 /**
