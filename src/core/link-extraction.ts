@@ -14,6 +14,11 @@
 import type { BrainEngine } from './engine.ts';
 import type { PageType } from './types.ts';
 import { ensureWellFormed } from './text-safe.ts';
+// BH carry (connectivity-fix): the relative-markdown pass slugifies resolved
+// paths with the SAME function sync uses to slug files, so a resolved
+// `../../docs/specs/x.md` matches the page slug sync created for that file.
+// Runtime-only reference (no cycle: sync.ts does not import this module).
+import { slugifyPath } from './sync.ts';
 
 /**
  * v0.42.7 — link-extraction version stamp. Bump this ISO timestamp whenever the
@@ -28,7 +33,10 @@ import { ensureWellFormed } from './text-safe.ts';
  * OR updated_at > links_extracted_at`. It is an ISO-8601 string (NOT a number) —
  * the column is TIMESTAMPTZ and the predicate binds it as `::timestamptz`.
  */
-export const LINK_EXTRACTOR_VERSION_TS = '2026-05-31T00:00:00Z';
+// BH carry (connectivity-fix): bumped so the repo-relative markdown pass
+// (extractRelativeMarkdownRefs) re-extracts every previously-stamped page on
+// the next `gbrain extract --stale` sweep. See test/link-extraction-relative-md.test.ts.
+export const LINK_EXTRACTOR_VERSION_TS = '2026-07-21T00:00:00Z';
 
 // ─── Entity references ──────────────────────────────────────────
 
@@ -449,6 +457,88 @@ export function extractEntityRefs(content: string, extraDirs?: readonly string[]
 }
 
 /**
+ * BH carry (connectivity-fix): generic markdown link `[text](target)`. Unlike
+ * ENTITY_REF_RE this is NOT gated by a dir whitelist — it matches ANY link so
+ * the relative-markdown pass can resolve `[spec](../../docs/specs/x.md)` style
+ * cross-references (the dominant style in docs/, skills/, session content),
+ * which produced zero edges before this carry. `[^)\s]+` stops at whitespace,
+ * so a link title `[t](url "title")` captures just the url.
+ */
+const RELATIVE_MD_LINK_RE = /\[([^\]]+)\]\(([^)\s]+)\)/g;
+
+/**
+ * BH carry (connectivity-fix): resolve a repo-relative link target against the
+ * directory of `baseDir` (posix segment walk). `/`-absolute targets resolve
+ * from the repo root (baseDir ignored). Returns `null` when a `..` walks above
+ * the root (the link escapes the repo — not a resolvable page).
+ */
+function resolveRelativePath(baseDir: string, target: string): string | null {
+  const fromRoot = target.startsWith('/');
+  const out: string[] = fromRoot ? [] : (baseDir ? baseDir.split('/') : []);
+  for (const seg of target.split('/')) {
+    if (seg === '' || seg === '.') continue; // leading/trailing/double slash, or '.'
+    if (seg === '..') {
+      if (out.length === 0) return null;     // escapes above the repo root
+      out.pop();
+      continue;
+    }
+    out.push(seg);
+  }
+  return out.join('/');
+}
+
+/**
+ * BH carry (connectivity-fix): extract repo-relative markdown links from a
+ * page and resolve them to canonical slugs.
+ *
+ * For each `[text](target)`:
+ *   - decodeURIComponent (`%20` → space), keeping the raw target on malformed
+ *     escapes rather than throwing;
+ *   - skip external schemes (`http:`, `mailto:`, protocol-relative `//host`)
+ *     and pure `#anchor` (same-page) targets;
+ *   - strip a trailing `#fragment`;
+ *   - require a `.md`/`.mdx` extension (case-insensitive), then strip it —
+ *     links to code/images/assets are not page cross-refs;
+ *   - resolve against `dirname(pageSlug)` (or the root for `/`-absolute),
+ *     dropping targets that escape above the root;
+ *   - slugify with the SAME slugifyPath sync uses, so the emitted slug matches
+ *     the page sync created for that file.
+ *
+ * Pure: the caller (extractPageLinks) applies the existing getAllSlugs()
+ * validity filter, so non-page and dangling targets are dropped downstream.
+ */
+export function extractRelativeMarkdownRefs(pageSlug: string, content: string): EntityRef[] {
+  const stripped = stripCodeBlocks(content);
+  const refs: EntityRef[] = [];
+  const baseDir = pageSlug.includes('/') ? pageSlug.slice(0, pageSlug.lastIndexOf('/')) : '';
+  for (const match of stripped.matchAll(RELATIVE_MD_LINK_RE)) {
+    const name = match[1];
+    let target = match[2].trim();
+    if (!target) continue;
+    // Decode percent-escapes; malformed sequences keep the raw target.
+    try { target = decodeURIComponent(target); } catch { /* keep raw */ }
+    // External schemes (http:, https:, mailto:, …) and protocol-relative URLs.
+    if (/^[a-z][a-z0-9+.-]*:/i.test(target)) continue;
+    if (target.startsWith('//')) continue;
+    // Pure fragment (same-page anchor) is not a cross-page reference.
+    if (target.startsWith('#')) continue;
+    const hashIdx = target.indexOf('#');
+    if (hashIdx >= 0) target = target.slice(0, hashIdx);
+    if (!target) continue;
+    // Only markdown targets are page cross-refs; strip the extension.
+    if (!/\.mdx?$/i.test(target)) continue;
+    target = target.replace(/\.mdx?$/i, '');
+    const resolved = resolveRelativePath(baseDir, target);
+    if (resolved === null) continue;
+    const slug = slugifyPath(resolved);
+    if (!slug) continue;
+    const dir = slug.includes('/') ? slug.split('/')[0] : '';
+    refs.push({ name, slug, dir });
+  }
+  return refs;
+}
+
+/**
  * Replace the byte ranges with spaces, preserving offsets. Used by
  * extractEntityRefs to prevent the unqualified wikilink regex from
  * matching inside a qualified wikilink span.
@@ -531,7 +621,7 @@ export async function extractPageLinks(
   frontmatter: Record<string, unknown>,
   pageType: PageType,
   resolver: SlugResolver,
-  opts: { globalBasename?: boolean; skipFrontmatter?: boolean; extraDirs?: readonly string[] } = {},
+  opts: { globalBasename?: boolean; skipFrontmatter?: boolean; extraDirs?: readonly string[]; relativeMarkdown?: boolean } = {},
 ): Promise<PageLinksResult> {
   const candidates: LinkCandidate[] = [];
 
@@ -581,6 +671,34 @@ export async function extractPageLinks(
       context,
       linkSource: 'markdown',
     });
+  }
+
+  // 1b. BH carry (connectivity-fix): repo-relative markdown links
+  //     `[spec](../../docs/specs/x.md)` whose target isn't prefixed by a known
+  //     entity dir, so the pass-1 entity-dir regex can't see them. Gated by
+  //     auto_link.relative_markdown (default off upstream). We mask the
+  //     entity-dir markdown spans first so a link pass-1 already owns isn't
+  //     re-resolved here (no double-emit); the within-page dedup at the tail
+  //     collapses any that still collide on (target, type, source).
+  if (opts.relativeMarkdown) {
+    const strippedForMask = stripCodeBlocks(content);
+    const entityMdRanges: Array<[number, number]> = [];
+    const entityMdRe = buildEntityRegexes(opts.extraDirs ?? []).entityRefRe;
+    for (const em of strippedForMask.matchAll(entityMdRe)) {
+      if (em.index === undefined) continue;
+      entityMdRanges.push([em.index, em.index + em[0].length]);
+    }
+    const maskedForRelative = maskRanges(content, entityMdRanges);
+    for (const ref of extractRelativeMarkdownRefs(slug, maskedForRelative)) {
+      const idx = content.indexOf(ref.name);
+      const context = idx >= 0 ? excerpt(content, idx, 240) : ref.name;
+      candidates.push({
+        targetSlug: ref.slug,
+        linkType: inferLinkType(pageType, context, content, ref.slug),
+        context,
+        linkSource: 'markdown',
+      });
+    }
   }
 
   // 2. Bare slug references (e.g. "see people/alice-chen for context").
@@ -1288,6 +1406,30 @@ export async function isGlobalBasenameEnabled(engine: BrainEngine): Promise<bool
     return ['1', 'true', 'yes', 'on'].includes(normalized);
   }
   const val = await engine.getConfig('link_resolution.global_basename');
+  if (val == null) return false;
+  const normalized = val.trim().toLowerCase();
+  return ['1', 'true', 'yes', 'on'].includes(normalized);
+}
+
+/**
+ * BH carry (connectivity-fix): read the `auto_link.relative_markdown` flag.
+ * Defaults to FALSE (opt-in; upstream brains keep entity-dir-only extraction).
+ *
+ * When TRUE, extractPageLinks runs extractRelativeMarkdownRefs — repo-relative
+ * markdown links (`[spec](../../docs/specs/x.md)`) resolve to page slugs and
+ * emit reconcilable `markdown` edges. Resolution order mirrors
+ * isGlobalBasenameEnabled:
+ *   1. Env var `GBRAIN_AUTO_LINK_RELATIVE_MARKDOWN=1` (operator override)
+ *   2. DB config `auto_link.relative_markdown`
+ *   3. Default false
+ */
+export async function isRelativeMarkdownEnabled(engine: BrainEngine): Promise<boolean> {
+  const envVal = process.env.GBRAIN_AUTO_LINK_RELATIVE_MARKDOWN;
+  if (envVal != null) {
+    const normalized = envVal.trim().toLowerCase();
+    return ['1', 'true', 'yes', 'on'].includes(normalized);
+  }
+  const val = await engine.getConfig('auto_link.relative_markdown');
   if (val == null) return false;
   const normalized = val.trim().toLowerCase();
   return ['1', 'true', 'yes', 'on'].includes(normalized);

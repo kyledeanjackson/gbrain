@@ -16,7 +16,7 @@ import { expandQuery } from './search/expansion.ts';
 import { dedupResults } from './search/dedup.ts';
 import { captureEvalCandidate, isEvalCaptureEnabled, isEvalScrubEnabled } from './eval-capture.ts';
 import type { HybridSearchMeta } from './types.ts';
-import { extractPageLinks, getAutoLinkExtraDirs, isAutoLinkEnabled, isAutoTimelineEnabled, isGlobalBasenameEnabled, parseTimelineEntries, makeResolver, type UnresolvedFrontmatterRef } from './link-extraction.ts';
+import { extractPageLinks, getAutoLinkExtraDirs, isAutoLinkEnabled, isAutoTimelineEnabled, isGlobalBasenameEnabled, isRelativeMarkdownEnabled, parseTimelineEntries, makeResolver, type UnresolvedFrontmatterRef } from './link-extraction.ts';
 import { isFactsBackstopEligible } from './facts/eligibility.ts';
 import { stripTakesFence } from './takes-fence.ts';
 import { stripFactsFence } from './facts-fence.ts';
@@ -905,7 +905,7 @@ const put_page: Operation = {
     // would surface higher in search. Local CLI users (ctx.remote=false) opt
     // into this behavior; MCP/remote writes do not.
     let autoLinks:
-      | { created: number; removed: number; errors: number; unresolved: UnresolvedFrontmatterRef[] }
+      | { created: number; removed: number; errors: number; skipped_unresolvable: number; unresolved: UnresolvedFrontmatterRef[] }
       | { error: string }
       | { skipped: 'remote' }
       | undefined;
@@ -1060,7 +1060,7 @@ async function runAutoLink(
   slug: string,
   parsed: { type: PageType; compiled_truth: string; timeline: string; frontmatter: Record<string, unknown> },
   opts?: { sourceId?: string },
-): Promise<{ created: number; removed: number; errors: number; unresolved: UnresolvedFrontmatterRef[] }> {
+): Promise<{ created: number; removed: number; errors: number; skipped_unresolvable: number; unresolved: UnresolvedFrontmatterRef[] }> {
   const fullContent = parsed.compiled_truth + '\n' + parsed.timeline;
   // v0.31.8 (codex OV-2): thread sourceId through every read + write inside
   // reconcileLinks. Without this the FS walker reads cross-source links/slugs
@@ -1085,9 +1085,11 @@ async function runAutoLink(
   // v0.33.3 BH-carry: extend dir whitelist with site-specific prefixes from
   // auto_link.extra_dirs config (numbered dirs, shorthand aliases).
   const extraDirs = await getAutoLinkExtraDirs(engine);
+  // BH carry (connectivity-fix): opt-in repo-relative markdown link resolution.
+  const relativeMarkdown = await isRelativeMarkdownEnabled(engine);
   const { candidates, unresolved } = await extractPageLinks(
     slug, fullContent, parsed.frontmatter, parsed.type, resolver,
-    { globalBasename, extraDirs },
+    { globalBasename, extraDirs, relativeMarkdown },
   );
 
   // Resolve which targets exist (skip refs to non-existent pages to avoid FK
@@ -1098,6 +1100,11 @@ async function runAutoLink(
   const valid = candidates.filter(c =>
     allSlugs.has(c.targetSlug) && (!c.fromSlug || allSlugs.has(c.fromSlug))
   );
+  // BH carry (connectivity-fix): observability only — how many candidates the
+  // validity filter dropped (target/from slug not a live page). Makes a
+  // "dead_links: 0" health reading honest: unresolvable refs are counted here,
+  // not silently swallowed. Not persisted.
+  const skippedUnresolvable = candidates.length - valid.length;
 
   // Split candidates by direction. Outgoing (fromSlug === slug or unset) are
   // this page's own edges, reconciled against getLinks(slug). Incoming
@@ -1222,7 +1229,7 @@ async function runAutoLink(
     return { created, removed, errors };
   });
 
-  return { ...result, unresolved };
+  return { ...result, skipped_unresolvable: skippedUnresolvable, unresolved };
 }
 
 const delete_page: Operation = {

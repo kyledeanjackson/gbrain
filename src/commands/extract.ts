@@ -35,7 +35,7 @@ import type { PageType } from '../core/types.ts';
 import { parseMarkdown } from '../core/markdown.ts';
 import {
   extractPageLinks, parseTimelineEntries, inferLinkType, makeResolver,
-  extractFrontmatterLinks, isGlobalBasenameEnabled, LINK_EXTRACTOR_VERSION_TS,
+  extractFrontmatterLinks, isGlobalBasenameEnabled, isRelativeMarkdownEnabled, LINK_EXTRACTOR_VERSION_TS,
   WIKILINK_BASENAME_LINK_TYPE,
   buildBasenameIndex, queryBasenameIndex, stripCodeBlocks,
   getAutoLinkExtraDirs,
@@ -1308,6 +1308,8 @@ async function extractLinksFromDB(
   // Issue #972: opt-in global-basename wikilink resolution. Read once
   // per extract run; threaded into each extractPageLinks call.
   const globalBasename = await isGlobalBasenameEnabled(engine);
+  // BH carry (connectivity-fix): opt-in repo-relative markdown link resolution.
+  const relativeMarkdown = await isRelativeMarkdownEnabled(engine);
   // v0.32.8: listAllPageRefs enumerates (slug, source_id) so we can thread
   // sourceId to getPage AND build a cross-source resolution map for link
   // disambiguation. Pre-fix used getAllSlugs() which collapsed
@@ -1388,7 +1390,7 @@ async function extractLinksFromDB(
     // basename lookup; off by default for back-compat.
     const extracted = await extractPageLinks(
       slug, fullContent, page.frontmatter, page.type, resolver,
-      { skipFrontmatter: !includeFrontmatter, globalBasename, extraDirs },
+      { skipFrontmatter: !includeFrontmatter, globalBasename, extraDirs, relativeMarkdown },
     );
     unresolved.push(...extracted.unresolved);
 
@@ -1618,6 +1620,9 @@ async function extractStaleFromDB(
   // so the --stale path recognizes site-specific dirs (numbered "03-ventures",
   // shorthand "venture/") too. Default behavior unchanged when unset.
   const extraDirs = await getAutoLinkExtraDirs(engine);
+  // BH carry (connectivity-fix): same auto_link.relative_markdown gate as
+  // extractLinksFromDB, so --stale re-extracts repo-relative markdown links.
+  const relativeMarkdown = await isRelativeMarkdownEnabled(engine);
   const allRefs = await engine.listAllPageRefs();
   const allSlugs = new Set<string>();
   const slugToSources = new Map<string, string[]>();
@@ -1650,7 +1655,7 @@ async function extractStaleFromDB(
       const fullContent = page.compiled_truth + '\n' + page.timeline;
       const extracted = await extractPageLinks(
         page.slug, fullContent, page.frontmatter, page.type, activeResolver,
-        { extraDirs },
+        { extraDirs, relativeMarkdown },
       );
       for (const c of extracted.candidates) {
         const r = resolveCandidateSources(c, page.slug, page.source_id, allSlugs, slugToSources);
