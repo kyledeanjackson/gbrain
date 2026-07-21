@@ -119,6 +119,91 @@ describe('Bug 11 — orphan_pages is "no inbound links"', () => {
   });
 });
 
+describe('BH carry (connectivity-fix) — soft-delete + dedupe + no_inbound', () => {
+  const pageId = async (slug: string, sourceId = 'default'): Promise<number> =>
+    (await (engine as any).db.query(
+      `SELECT id FROM pages WHERE slug=$1 AND source_id=$2`, [slug, sourceId],
+    )).rows[0].id;
+
+  test('soft-deleted pages are excluded from page_count and orphan counts', async () => {
+    for (const slug of ['a', 'b', 'c']) {
+      await engine.putPage(slug, { type: 'note', title: slug, compiled_truth: `content of ${slug}`, frontmatter: {} });
+    }
+    const before = await engine.getHealth();
+    expect(before.page_count).toBe(3);
+    expect(before.orphan_pages).toBe(3); // a/b/c all islanded
+
+    const deleted = await engine.softDeletePage('c');
+    expect(deleted).not.toBeNull();
+
+    const after = await engine.getHealth();
+    // The soft-deleted page drops out of every FROM pages count.
+    expect(after.page_count).toBe(2);
+    expect(after.orphan_pages).toBe(2);
+    expect(after.no_inbound_pages).toBe(2);
+  });
+
+  test('most_connected sums per slug across source_ids (no duplicate slug rows)', async () => {
+    // Two person pages share slug people/dupe across two sources — the old
+    // query returned two rows; the carry sums them into one.
+    await (engine as any).db.query(
+      `INSERT INTO sources (id, name, config) VALUES ('src2', 'src2', '{}'::jsonb) ON CONFLICT (id) DO NOTHING`,
+    );
+    await engine.putPage('people/dupe', { type: 'person', title: 'Dupe', compiled_truth: 'x', frontmatter: {} });
+    await (engine as any).db.query(
+      `INSERT INTO pages (source_id, slug, type, title, compiled_truth) VALUES ('src2', 'people/dupe', 'person', 'Dupe', 'x')`,
+    );
+    await engine.putPage('people/target', { type: 'person', title: 'Target', compiled_truth: 'y', frontmatter: {} });
+
+    const dupeDefault = await pageId('people/dupe', 'default');
+    const dupeSrc2 = await pageId('people/dupe', 'src2');
+    const target = await pageId('people/target', 'default');
+    // default dupe: 1 link; src2 dupe: 2 links → summed 3 under one slug.
+    await (engine as any).db.query(
+      `INSERT INTO links (from_page_id, to_page_id, link_type) VALUES ($1, $2, 'mentions')`, [dupeDefault, target]);
+    await (engine as any).db.query(
+      `INSERT INTO links (from_page_id, to_page_id, link_type) VALUES ($1, $2, 'attended'), ($1, $2, 'mentions')`,
+      [dupeSrc2, target]);
+
+    const h = await engine.getHealth();
+    const dupeRows = h.most_connected.filter(c => c.slug === 'people/dupe');
+    expect(dupeRows.length).toBe(1); // deduped
+    expect(dupeRows[0].link_count).toBe(3); // 1 + 2 summed
+  });
+
+  test('no_inbound_pages counts hubs; orphan_pages (islanded) is a strict subset', async () => {
+    await engine.putPage('hub', { type: 'note', title: 'Hub', compiled_truth: 'index', frontmatter: {} });
+    await engine.putPage('leaf', { type: 'note', title: 'Leaf', compiled_truth: 'x', frontmatter: {} });
+    await engine.putPage('loner', { type: 'note', title: 'Loner', compiled_truth: 'alone', frontmatter: {} });
+    const hub = await pageId('hub');
+    const leaf = await pageId('leaf');
+    await (engine as any).db.query(
+      `INSERT INTO links (from_page_id, to_page_id, link_type) VALUES ($1, $2, 'mentions')`, [hub, leaf]);
+
+    const h = await engine.getHealth();
+    // hub: outbound only → no_inbound but NOT islanded. loner: no links →
+    // both. leaf: has inbound → neither.
+    expect(h.no_inbound_pages).toBe(2); // hub + loner
+    expect(h.orphan_pages).toBe(1);     // loner only
+    expect(h.no_inbound_pages).toBeGreaterThan(h.orphan_pages);
+  });
+
+  test('dead_links counts links whose target is soft-deleted', async () => {
+    await engine.putPage('from', { type: 'note', title: 'From', compiled_truth: 'x', frontmatter: {} });
+    await engine.putPage('to', { type: 'note', title: 'To', compiled_truth: 'y', frontmatter: {} });
+    const from = await pageId('from');
+    const to = await pageId('to');
+    await (engine as any).db.query(
+      `INSERT INTO links (from_page_id, to_page_id, link_type) VALUES ($1, $2, 'mentions')`, [from, to]);
+    expect((await engine.getHealth()).dead_links).toBe(0);
+
+    // Soft-delete the target: the link now points at a row hidden everywhere
+    // else, so it's dead even though the FK row still exists.
+    await engine.softDeletePage('to');
+    expect((await engine.getHealth()).dead_links).toBe(1);
+  });
+});
+
 describe('Bug 11 — doctor renders brain_score breakdown', () => {
   test('doctor source contains brain_score breakdown rendering', async () => {
     const source = await Bun.file(new URL('../src/commands/doctor.ts', import.meta.url)).text();

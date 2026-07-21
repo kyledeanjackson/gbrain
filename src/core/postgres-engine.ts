@@ -4649,23 +4649,38 @@ export class PostgresEngine implements BrainEngine {
     // SQL required both — docs now match code so users can trust the
     // number. A hub page that links out to many but has no back-references
     // is working as intended, not an orphan.
+    //
+    // BH carry (connectivity-fix): every `FROM pages` subquery now filters
+    // `deleted_at IS NULL` so soft-deleted rows don't inflate page_count
+    // (was 1808 vs stats' 1803), orphan/no-inbound counts, or the entity
+    // coverage denominators. dead_links treats a soft-deleted target as
+    // dangling (link points at a row hidden everywhere else). `no_inbound_pages`
+    // is added as an explicit second orphan metric (islanded ⊆ no-inbound) so
+    // health and `gbrain orphans` are labeled+comparable instead of reporting
+    // two different numbers for "orphan". Guarded by test/brain-score-breakdown.test.ts.
     const [h] = await sql`
       WITH entity_pages AS (
-        SELECT id, slug FROM pages WHERE type IN ('person', 'company')
+        SELECT id, slug FROM pages WHERE type IN ('person', 'company') AND deleted_at IS NULL
       )
       SELECT
-        (SELECT count(*) FROM pages) as page_count,
+        (SELECT count(*) FROM pages WHERE deleted_at IS NULL) as page_count,
         (SELECT count(*) FROM content_chunks WHERE embedded_at IS NOT NULL)::float /
           GREATEST((SELECT count(*) FROM content_chunks), 1)::float as embed_coverage,
         (SELECT count(*) FROM pages p
-         WHERE p.updated_at < (SELECT MAX(te.created_at) FROM timeline_entries te WHERE te.page_id = p.id)
+         WHERE p.deleted_at IS NULL
+           AND p.updated_at < (SELECT MAX(te.created_at) FROM timeline_entries te WHERE te.page_id = p.id)
         ) as stale_pages,
         (SELECT count(*) FROM pages p
-         WHERE NOT EXISTS (SELECT 1 FROM links l WHERE l.to_page_id = p.id)
+         WHERE p.deleted_at IS NULL
+           AND NOT EXISTS (SELECT 1 FROM links l WHERE l.to_page_id = p.id)
            AND NOT EXISTS (SELECT 1 FROM links l WHERE l.from_page_id = p.id)
         ) as orphan_pages,
+        (SELECT count(*) FROM pages p
+         WHERE p.deleted_at IS NULL
+           AND NOT EXISTS (SELECT 1 FROM links l WHERE l.to_page_id = p.id)
+        ) as no_inbound_pages,
         (SELECT count(*) FROM links l
-         WHERE NOT EXISTS (SELECT 1 FROM pages p WHERE p.id = l.to_page_id)
+         WHERE NOT EXISTS (SELECT 1 FROM pages p WHERE p.id = l.to_page_id AND p.deleted_at IS NULL)
         ) as dead_links,
         (SELECT count(*) FROM content_chunks WHERE embedded_at IS NULL) as missing_embeddings,
         (SELECT count(*) FROM links) as link_count,
@@ -4678,11 +4693,18 @@ export class PostgresEngine implements BrainEngine {
           GREATEST((SELECT count(*) FROM entity_pages), 1)::float as timeline_coverage
     `;
 
+    // BH carry: aggregate link counts per SLUG across source_ids so a page
+    // that exists in multiple sources appears once (was duplicating rows,
+    // e.g. paul-ventura/greg-segal). Soft-deleted pages excluded.
     const connected = await sql`
-      SELECT p.slug,
-             (SELECT count(*) FROM links l WHERE l.from_page_id = p.id OR l.to_page_id = p.id)::int as link_count
-      FROM pages p
-      WHERE p.type IN ('person', 'company')
+      SELECT slug, SUM(cnt)::int as link_count
+      FROM (
+        SELECT p.slug,
+               (SELECT count(*) FROM links l WHERE l.from_page_id = p.id OR l.to_page_id = p.id) as cnt
+        FROM pages p
+        WHERE p.type IN ('person', 'company') AND p.deleted_at IS NULL
+      ) per_page
+      GROUP BY slug
       ORDER BY link_count DESC
       LIMIT 5
     `;
@@ -4719,6 +4741,7 @@ export class PostgresEngine implements BrainEngine {
       embed_coverage: embedCoverage,
       stale_pages: Number(h.stale_pages),
       orphan_pages: orphanPages,
+      no_inbound_pages: Number(h.no_inbound_pages),
       missing_embeddings: Number(h.missing_embeddings),
       brain_score: brainScore,
       dead_links: deadLinks,

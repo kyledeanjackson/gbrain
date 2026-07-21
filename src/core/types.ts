@@ -1312,6 +1312,17 @@ export interface BrainHealth {
    * semantics after Bug 11 doc-drift fix.
    */
   orphan_pages: number;
+  /**
+   * BH carry (connectivity-fix): pages with zero INBOUND links (the strict
+   * graph-theory "no inbound" definition), counted over live pages only.
+   * Islanded `orphan_pages` is a subset of this (a page can lack inbound links
+   * yet still link out — a hub — which counts here but NOT in orphan_pages).
+   * Exposed as an explicit second metric so `gbrain orphans` (no-inbound,
+   * source-scoped, deny-filtered) and health report comparable, labeled
+   * numbers instead of one incomparable figure. No CLI pseudo/deny filter is
+   * applied at the engine layer — that stays in `findOrphans`.
+   */
+  no_inbound_pages: number;
   missing_embeddings: number;
   /**
    * Composite quality score, 0-100. Weighted sum of five components: embed
