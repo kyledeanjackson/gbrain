@@ -6,6 +6,7 @@ import { operations, type AuthInfo } from '../core/operations.ts';
 import { VERSION } from '../version.ts';
 import { buildToolDefs } from './tool-defs.ts';
 import { dispatchToolCall, validateParams, buildOperationContext } from './dispatch.ts';
+import { MCP_INSTRUCTIONS } from './instructions.ts';
 import { getBrainHotMemoryMeta } from '../core/facts/meta-hook.ts';
 import { loadConfig } from '../core/config.ts';
 import {
@@ -18,7 +19,9 @@ import { resolveEntitiesToPointers } from '../core/context/retrieval-reflex.ts';
 export async function startMcpServer(engine: BrainEngine) {
   const server = new Server(
     { name: 'gbrain', version: VERSION },
-    { capabilities: { tools: {} } },
+    // `instructions` reaches every connected agent's system context at
+    // initialize time (harness-injected) — the always-on brain-first nudge.
+    { capabilities: { tools: {} }, instructions: MCP_INSTRUCTIONS },
   );
 
   // Generate tool definitions from operations. Extracted to buildToolDefs so
