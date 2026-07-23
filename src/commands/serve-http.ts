@@ -28,6 +28,7 @@ import { GBrainOAuthProvider } from '../core/oauth-provider.ts';
 import type { SqlQuery } from '../core/oauth-provider.ts';
 import { hasScope, ALLOWED_SCOPES_LIST } from '../core/scope.ts';
 import { summarizeMcpParams } from '../mcp/dispatch.ts';
+import { MCP_INSTRUCTIONS } from '../mcp/instructions.ts';
 import { loadConfig } from '../core/config.ts';
 import { buildError, serializeError } from '../core/errors.ts';
 import { VERSION } from '../version.ts';
@@ -757,7 +758,8 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
     // Create a fresh MCP server per request (stateless)
     const server = new Server(
       { name: 'gbrain', version: VERSION },
-      { capabilities: { tools: {} } },
+      // Same brain-first `instructions` as the stdio transport (src/mcp/server.ts)
+      { capabilities: { tools: {} }, instructions: MCP_INSTRUCTIONS },
     );
 
     server.setRequestHandler(ListToolsRequestSchema, async () => {
