@@ -54,7 +54,8 @@ export async function endPoolBounded(
  * MaxClients errors when `gbrain upgrade` spawns subprocesses that each open
  * their own pool. Set `GBRAIN_POOL_SIZE=2` (or similar) before the command.
  */
-const DEFAULT_POOL_SIZE_FALLBACK = 10;
+const DEFAULT_POOL_SIZE_FALLBACK = 2;
+const DEFAULT_IDLE_TIMEOUT_SECONDS = 10;
 
 /**
  * Supabase PgBouncer transaction-mode convention: port 6543 routes through
@@ -101,6 +102,37 @@ export function resolvePrepare(url: string): boolean | undefined {
     // URL parse failure — fall through to default
   }
 
+  return undefined;
+}
+
+/**
+ * Pool idle-timeout (seconds) before an unused connection is closed.
+ * Default is deliberately small (10s): gbrain's connection count scales with
+ * concurrent Claude sessions across the team (one MCP server per session,
+ * plus CLI one-shots), so ephemeral processes must shed backends fast.
+ * Daemons (autopilot, jobs-worker) raise this via GBRAIN_POOL_IDLE_TIMEOUT
+ * in /etc/lattice/lattice.env. See 2026-07-22 max_connections incident.
+ */
+export function resolveIdleTimeout(): number {
+  const raw = process.env.GBRAIN_POOL_IDLE_TIMEOUT;
+  if (raw) {
+    const parsed = parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return DEFAULT_IDLE_TIMEOUT_SECONDS;
+}
+
+/**
+ * Optional max connection lifetime (seconds). Unset by default (ephemeral
+ * processes die first anyway); daemons set GBRAIN_POOL_MAX_LIFETIME=1800 so
+ * long-lived workers recycle backends instead of pinning them for days.
+ */
+export function resolveMaxLifetime(): number | undefined {
+  const raw = process.env.GBRAIN_POOL_MAX_LIFETIME;
+  if (raw) {
+    const parsed = parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
   return undefined;
 }
 
@@ -237,7 +269,8 @@ export async function connect(config: EngineConfig): Promise<boolean> {
     const timeouts = resolveSessionTimeouts();
     const opts: Record<string, unknown> = {
       max: resolvePoolSize(),
-      idle_timeout: 20,
+      idle_timeout: resolveIdleTimeout(),
+      max_lifetime: resolveMaxLifetime(),
       connect_timeout: 10,
       types: {
         // Register pgvector type

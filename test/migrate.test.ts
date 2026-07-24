@@ -1038,9 +1038,11 @@ describe('resolvePoolSize — env var + explicit override', () => {
     else process.env.GBRAIN_POOL_SIZE = original;
   });
 
-  test('returns 10 default when unset and no explicit override', () => {
+  test('returns 2 default when unset and no explicit override', () => {
+    // 2026-07-24: default dropped 10 -> 2 (max_connections incident) — the
+    // ephemeral budget; daemons opt up via GBRAIN_POOL_SIZE in lattice.env.
     delete process.env.GBRAIN_POOL_SIZE;
-    expect(resolvePoolSize()).toBe(10);
+    expect(resolvePoolSize()).toBe(2);
   });
 
   test('reads GBRAIN_POOL_SIZE as an integer', () => {
@@ -1052,11 +1054,35 @@ describe('resolvePoolSize — env var + explicit override', () => {
 
   test('ignores invalid GBRAIN_POOL_SIZE values', () => {
     process.env.GBRAIN_POOL_SIZE = 'not-a-number';
-    expect(resolvePoolSize()).toBe(10);
+    expect(resolvePoolSize()).toBe(2);
     process.env.GBRAIN_POOL_SIZE = '0';
-    expect(resolvePoolSize()).toBe(10);
+    expect(resolvePoolSize()).toBe(2);
     process.env.GBRAIN_POOL_SIZE = '-1';
-    expect(resolvePoolSize()).toBe(10);
+    expect(resolvePoolSize()).toBe(2);
+  });
+
+  test('resolveIdleTimeout defaults to 10s, honors GBRAIN_POOL_IDLE_TIMEOUT', () => {
+    const { resolveIdleTimeout } = require('../src/core/db.ts');
+    const orig = process.env.GBRAIN_POOL_IDLE_TIMEOUT;
+    delete process.env.GBRAIN_POOL_IDLE_TIMEOUT;
+    expect(resolveIdleTimeout()).toBe(10);
+    process.env.GBRAIN_POOL_IDLE_TIMEOUT = '30';
+    expect(resolveIdleTimeout()).toBe(30);
+    process.env.GBRAIN_POOL_IDLE_TIMEOUT = 'junk';
+    expect(resolveIdleTimeout()).toBe(10);
+    if (orig === undefined) delete process.env.GBRAIN_POOL_IDLE_TIMEOUT;
+    else process.env.GBRAIN_POOL_IDLE_TIMEOUT = orig;
+  });
+
+  test('resolveMaxLifetime defaults to undefined, honors GBRAIN_POOL_MAX_LIFETIME', () => {
+    const { resolveMaxLifetime } = require('../src/core/db.ts');
+    const orig = process.env.GBRAIN_POOL_MAX_LIFETIME;
+    delete process.env.GBRAIN_POOL_MAX_LIFETIME;
+    expect(resolveMaxLifetime()).toBeUndefined();
+    process.env.GBRAIN_POOL_MAX_LIFETIME = '1800';
+    expect(resolveMaxLifetime()).toBe(1800);
+    if (orig === undefined) delete process.env.GBRAIN_POOL_MAX_LIFETIME;
+    else process.env.GBRAIN_POOL_MAX_LIFETIME = orig;
   });
 
   test('explicit argument wins over env + default', () => {

@@ -37,7 +37,7 @@
  */
 
 import postgres from 'postgres';
-import { resolvePrepare, resolveSessionTimeouts, resolvePoolSize, endPoolBounded } from './db.ts';
+import { resolvePrepare, resolveSessionTimeouts, resolvePoolSize, resolveIdleTimeout, resolveMaxLifetime, endPoolBounded } from './db.ts';
 import { redactPgUrl } from './url-redact.ts';
 import { logConnectionEvent } from './connection-audit.ts';
 
@@ -254,7 +254,8 @@ export class ConnectionManager {
     }
     const opts: Record<string, unknown> = {
       max: resolvePoolSize(this.opts.readPoolSize),
-      idle_timeout: 20,
+      idle_timeout: resolveIdleTimeout(),
+      max_lifetime: resolveMaxLifetime(),
       connect_timeout: 10,
       types: { bigint: postgres.BigInt },
     };
@@ -334,7 +335,8 @@ export class ConnectionManager {
     const size = resolveDirectPoolSize(this.opts.directPoolSize);
     const opts: Record<string, unknown> = {
       max: size,
-      idle_timeout: 20,
+      idle_timeout: resolveIdleTimeout(),
+      max_lifetime: resolveMaxLifetime(),
       connect_timeout: 10,
       types: { bigint: postgres.BigInt },
       // Always use prepared statements on the direct pool — no PgBouncer

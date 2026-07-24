@@ -179,7 +179,8 @@ export class PostgresEngine implements BrainEngine {
       const timeouts = db.resolveSessionTimeouts();
       const opts: Record<string, unknown> = {
         max: size,
-        idle_timeout: 20,
+        idle_timeout: db.resolveIdleTimeout(),
+        max_lifetime: db.resolveMaxLifetime(),
         connect_timeout: 10,
         types: { bigint: postgres.BigInt },
         // Silence postgres NOTICE-level messages by default. See db.ts for
